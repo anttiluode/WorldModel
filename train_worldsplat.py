@@ -6,9 +6,11 @@ from worldmodel.train import TrainConfig, train_worldsplat
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Train WorldSplat v0 from a folder of images.")
-    ap.add_argument("--data", required=True, help="image folder (recursive)")
+    ap = argparse.ArgumentParser(description="Train WorldSplat from a normal image folder or extracted Virtual KITTI 2 RGB+depth.")
+    ap.add_argument("--data", default=None, help="normal image folder (recursive)")
     ap.add_argument("--depth-dir", default=None, help="optional matching .npy/.png relative-depth maps (0 near, 1 far)")
+    ap.add_argument("--vkitti2", default=None, help="common parent containing extracted Virtual KITTI 2 RGB and depth archives")
+    ap.add_argument("--vkitti2-depth-max-m", type=float, default=80.0, help="global metric depth range; default 80 m")
     ap.add_argument("--out", default="runs/worldsplat")
     ap.add_argument("--image-size", type=int, default=64)
     ap.add_argument("--splats", type=int, default=128)
@@ -23,9 +25,14 @@ def main() -> None:
     ap.add_argument("--no-amp", action="store_true")
     args = ap.parse_args()
 
+    if bool(args.data) == bool(args.vkitti2):
+        ap.error("choose exactly one of --data or --vkitti2")
+
     cfg = TrainConfig(
-        data_dir=args.data,
+        data_dir=args.data or "",
         depth_dir=args.depth_dir,
+        vkitti2_root=args.vkitti2,
+        vkitti2_depth_max_m=args.vkitti2_depth_max_m,
         out_dir=args.out,
         image_size=args.image_size,
         num_splats=args.splats,
@@ -44,7 +51,8 @@ def main() -> None:
         if m["kind"] == "cache":
             print(f"cache {m['done']}/{m['total']}: {m['path']}")
         elif m["kind"] == "step":
-            print(f"step {m['step']:6d}/{m['steps']} loss={m['loss']:.5f} rgb={m['rgb']:.5f} depth={m['depth']:.5f} kl={m['kl']:.5f} {m['device']}")
+            kind = m.get("dataset_kind", "folder")
+            print(f"{kind} step {m['step']:6d}/{m['steps']} loss={m['loss']:.5f} rgb={m['rgb']:.5f} depth={m['depth']:.5f} kl={m['kl']:.5f} {m['device']}")
         elif m["kind"] == "preview":
             print(f"preview -> {m['path']}")
         elif m["kind"] == "done":
