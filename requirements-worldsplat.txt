@@ -1,0 +1,6 @@
+numpy>=1.24
+Pillow>=10
+torch>=2.3
+# Optional teacher helper only:
+# transformers>=4.42
+# accelerate>=0.30
