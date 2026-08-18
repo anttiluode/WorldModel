@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from .data import build_or_load_cache
+from .vkitti2 import build_or_load_vkitti2_cache
 from .worldsplat import WorldSplatConfig, WorldSplatVAE, depth_to_unit, make_preview
 
 
@@ -18,6 +19,9 @@ class TrainConfig:
     data_dir: str
     out_dir: str = "runs/worldsplat"
     depth_dir: str | None = None
+    vkitti2_root: str | None = None
+    vkitti2_depth_max_m: float = 80.0
+    vkitti2_camera: int = 0
     image_size: int = 64
     num_splats: int = 128
     latent_dim: int = 64
@@ -67,13 +71,26 @@ def train_worldsplat(cfg: TrainConfig, *, callback=None, stop_event=None) -> Pat
         if callback:
             callback({"kind": "cache", "done": i, "total": n, "path": p})
 
-    cache = build_or_load_cache(
-        cfg.data_dir,
-        depth_dir=cfg.depth_dir,
-        image_size=cfg.image_size,
-        cache_dir=out / "cache",
-        progress=cache_cb,
-    )
+    if cfg.vkitti2_root:
+        cache = build_or_load_vkitti2_cache(
+            cfg.vkitti2_root,
+            image_size=cfg.image_size,
+            cache_dir=out / "cache",
+            max_depth_m=cfg.vkitti2_depth_max_m,
+            camera=cfg.vkitti2_camera,
+            progress=cache_cb,
+        )
+        dataset_kind = "virtual-kitti-2"
+    else:
+        cache = build_or_load_cache(
+            cfg.data_dir,
+            depth_dir=cfg.depth_dir,
+            image_size=cfg.image_size,
+            cache_dir=out / "cache",
+            progress=cache_cb,
+        )
+        dataset_kind = "folder"
+
     if cache.n < 2:
         raise ValueError("need at least 2 images")
 
@@ -129,6 +146,7 @@ def train_worldsplat(cfg: TrainConfig, *, callback=None, stop_event=None) -> Pat
                 "loss": val, "rgb": float(l_rgb.detach()), "depth": float(l_depth.detach()),
                 "kl": float(l_kl.detach()), "seconds": time.time() - t0,
                 "device": str(device), "has_depth": dep is not None,
+                "dataset_kind": dataset_kind,
             })
 
         if step % cfg.preview_every == 0 or step == cfg.steps:
@@ -146,17 +164,28 @@ def train_worldsplat(cfg: TrainConfig, *, callback=None, stop_event=None) -> Pat
             model.train()
 
         if step % cfg.save_every == 0 or step == cfg.steps:
-            ckpt = model.checkpoint_dict(extra={
+            extra = {
                 "train_config": asdict(cfg),
                 "depth_supervised": cache.depth is not None,
                 "dataset_size": cache.n,
+                "dataset_kind": dataset_kind,
                 "best_train_loss": best,
-            })
+            }
+            if cfg.vkitti2_root:
+                extra["vkitti2_depth_max_m"] = cfg.vkitti2_depth_max_m
+                extra["vkitti2_camera"] = cfg.vkitti2_camera
+            ckpt = model.checkpoint_dict(extra=extra)
             torch.save(ckpt, out / "worldsplat_latest.pt")
 
     ckpt_path = out / "worldsplat_latest.pt"
     if not ckpt_path.exists():
-        torch.save(model.checkpoint_dict(extra={"train_config": asdict(cfg), "depth_supervised": cache.depth is not None, "dataset_size": cache.n}), ckpt_path)
+        extra = {
+            "train_config": asdict(cfg),
+            "depth_supervised": cache.depth is not None,
+            "dataset_size": cache.n,
+            "dataset_kind": dataset_kind,
+        }
+        torch.save(model.checkpoint_dict(extra=extra), ckpt_path)
     if callback:
         callback({"kind": "done", "path": str(ckpt_path)})
     return ckpt_path
