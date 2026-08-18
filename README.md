@@ -4,7 +4,32 @@
 
 This repo is a research instrument for a small **anchored generative world model**: a persistent scene representation that separates its current best hypothesis from the evidence that actually supports that hypothesis.
 
-The project begins from a simple failure mode. A pretrained generative model can complete an occluded scene very convincingly. If that completion is fed back into the model and treated like a new observation, confidence can grow even though no new information entered the system.
+## WorldSplat Studio — usable now
+
+The first practical world-prior trainer/viewer lives on `agent/worldsplat-studio`.
+
+```bash
+pip install -r requirements-worldsplat.txt
+python world_studio.py
+```
+
+Give it a folder of images, optionally a matching folder of relative depth maps, and train a compact latent model whose decoder emits explicit 3-D soft splats rather than pixels. The GUI can sample, encode images, interpolate worlds, and orbit the learned scene.
+
+For the recommended v0 geometry-supervised mode:
+
+```bash
+pip install transformers accelerate
+python tools/make_depths.py --data D:/world_images --out D:/world_depth
+python world_studio.py
+```
+
+See `WORLDSPLAT_QUICKSTART.md` and `docs/WORLDSPLAT_V0.md`.
+
+Important: RGB-only training is an **appearance/cardboard baseline**. Monocular depth makes this a visible-surface **2.5-D** learner, not a solved full 3-D world model. True multiview consistency is the next representation gate.
+
+## The anchored-world question
+
+A pretrained generative model can complete an occluded scene very convincingly. If that completion is fed back into the model and treated like a new observation, confidence can grow even though no new information entered the system.
 
 So the world state is not just:
 
@@ -24,40 +49,19 @@ where `support` records externally anchored information and `lineage` records wh
 
 > **Prediction may change belief. Prediction is not new evidence.**
 
-A camera frame may add support. A genuinely independent view may add support. A teacher may provide a strong prior or a proposal. A self-generated completion may be useful. But replaying a prediction is not another measurement.
+A camera frame may add support. A geometrically informative new view may add support. A teacher may provide a strong prior or a proposal. A self-generated completion may be useful. But replaying a prediction is not another measurement.
 
-## Gate 0 — deliberately tiny
+## Gate 0 audit
 
-Before 3-D, splats, or a large teacher, the repo tests the bookkeeping in a one-dimensional ambiguous world:
+The original 1-D Gate 0 remains useful as bookkeeping/unit-test machinery, but its original 5/5 checks do **not** establish the proposed lineage/ROUTE mechanism. The current handoff records the audit: the accuracy comparison was confounded by class balance and unequal sensor precision, and scalar `q_ext` cannot exercise the directional property that matters.
 
-```text
-strong learned prior
-      +
-weak real observation
-      v
-confident-ish belief
-      |
-      | WAIT: self-predict / self-reinject
-      v
-naive system becomes extremely confident
-without becoming more externally supported
+The replacement gate is at least 2-D and uses actual observation geometry. A sharp learned prior can make posterior variance small in a poorly observed depth direction while directional external support remains tiny. A camera baseline shift can then add the missing geometric information.
 
-      | ROUTE: independent second observation
-      v
-support rises and the hidden state becomes easier to recover
-```
-
-Run:
-
-```bash
-python -m pip install -e . pytest
-python -m pytest -q
-python experiments/gate0_prediction_is_not_evidence.py
-```
+See `HANDOFF_CURRENT.md` and `docs/GATE1_PREFLIGHT.md`.
 
 ## Where 3-D enters
 
-The likely scene substrate is an explicit persistent map built from 3-D Gaussians/surfels plus a few structural primitives. That part is not novel: Gaussian SLAM, semantic Gaussians, persistent Gaussian memories, learned scene completion, and teacher-to-3-D distillation are active established areas.
+The likely persistent scene substrate is an explicit map built from 3-D Gaussians/surfels plus a few structural primitives. That part is not novel: Gaussian SLAM, semantic Gaussians, persistent Gaussian memories, learned scene completion, and teacher-to-3-D distillation are active established areas.
 
 The possible new object is narrower:
 
@@ -66,12 +70,10 @@ generative scene content
 +
 direction/attribute-specific external support
 +
-source lineage
+shared-source / lineage accounting
 +
 active ROUTE when confidence is high but anchoring is weak
 ```
-
-See `docs/ROADMAP_3D.md` and `HANDOFF_CURRENT.md`.
 
 ## Relationship to the splat repos
 
