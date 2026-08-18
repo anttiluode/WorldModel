@@ -1,0 +1,11 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Local training output/cache. Checkpoints can be copied out intentionally.
+runs/**/cache/
+runs/**/preview_latest.png
+
+# Do not accidentally commit extracted Virtual KITTI archives/data.
+vkitti_2.0.3_rgb/
+vkitti_2.0.3_depth/
