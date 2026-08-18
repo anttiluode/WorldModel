@@ -26,13 +26,14 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", default="depth-anything/Depth-Anything-V2-Small-hf")
     ap.add_argument("--no-invert", action="store_true", help="do not convert disparity-like output to 0-near/1-far")
-    ap.add_argument("--device", default=None, help="e.g. cuda:0 or cpu; default lets Transformers choose")
+    ap.add_argument("--device", default=None, help="e.g. cuda:0 or cpu; default auto-selects CUDA when available")
     args = ap.parse_args()
 
     try:
+        import torch
         from transformers import pipeline
     except Exception as e:
-        raise SystemExit("Install transformers first: pip install transformers accelerate") from e
+        raise SystemExit("Install transformers/accelerate in the same Torch environment: pip install transformers accelerate") from e
 
     root = Path(args.data)
     out = Path(args.out)
@@ -41,10 +42,12 @@ def main() -> None:
         raise SystemExit(f"no images under {root}")
     out.mkdir(parents=True, exist_ok=True)
 
-    kwargs = {"task": "depth-estimation", "model": args.model}
-    if args.device is not None:
-        kwargs["device"] = args.device
+    device = args.device
+    if device is None:
+        device = 0 if torch.cuda.is_available() else -1
+    kwargs = {"task": "depth-estimation", "model": args.model, "device": device}
     pipe = pipeline(**kwargs)
+    print(f"depth teacher: {args.model} | device={device}")
 
     for i, p in enumerate(files, 1):
         rel = p.relative_to(root)
