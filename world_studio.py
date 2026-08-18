@@ -11,14 +11,15 @@ from PIL import Image, ImageOps, ImageTk
 import torch
 
 from worldmodel.train import TrainConfig, train_worldsplat
+from worldmodel.vkitti2 import VKITTI2_DEFAULT_VARIATIONS, discover_vkitti2
 from worldmodel.worldsplat import WorldSplatVAE, depth_to_unit
 
 
 class WorldStudio:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("WorldModel — WorldSplat Studio v0")
-        root.geometry("1180x780")
+        root.title("WorldModel — WorldSplat Virtual KITTI 2")
+        root.geometry("1180x820")
         self.messages: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
         self.train_thread = None
@@ -39,22 +40,35 @@ class WorldStudio:
         outer.add(controls, weight=0)
         outer.add(view, weight=1)
 
-        ttk.Label(controls, text="WorldSplat v0", font=("TkDefaultFont", 16, "bold")).pack(anchor="w")
-        ttk.Label(controls, text="Train a compact 2.5-D scene prior, then sample / encode / orbit it.", wraplength=320).pack(anchor="w", pady=(0, 8))
+        ttk.Label(controls, text="WorldSplat — VKITTI2", font=("TkDefaultFont", 16, "bold")).pack(anchor="w")
+        ttk.Label(
+            controls,
+            text="Geometry-supervised 3-D-world experiment. Load extracted Virtual KITTI 2 RGB + depth with one button, then train / sample / orbit.",
+            wraplength=330,
+        ).pack(anchor="w", pady=(0, 8))
 
         self.data_var = tk.StringVar()
         self.depth_var = tk.StringVar()
-        self.out_var = tk.StringVar(value=str(Path.cwd() / "runs" / "worldsplat"))
-        self.steps_var = tk.IntVar(value=10000)
-        self.size_var = tk.IntVar(value=64)
-        self.splats_var = tk.IntVar(value=128)
-        self.latent_var = tk.IntVar(value=64)
-        self.batch_var = tk.IntVar(value=12)
+        self.vkitti_var = tk.StringVar()
+        self.vkitti_info = tk.StringVar(value="Virtual KITTI 2 mode: OFF")
+        self.out_var = tk.StringVar(value=str(Path.cwd() / "runs" / "vkitti2"))
+        self.steps_var = tk.IntVar(value=80000)
+        self.size_var = tk.IntVar(value=96)
+        self.splats_var = tk.IntVar(value=256)
+        self.latent_var = tk.IntVar(value=96)
+        self.batch_var = tk.IntVar(value=6)
 
         train_box = ttk.LabelFrame(controls, text="Train", padding=8)
         train_box.pack(fill=tk.X, pady=4)
-        self._path_row(train_box, "Images", self.data_var)
-        self._path_row(train_box, "Depth (optional)", self.depth_var)
+
+        vkrow = ttk.Frame(train_box)
+        vkrow.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(vkrow, text="LOAD VIRTUAL KITTI 2", command=self.load_vkitti2).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(vkrow, text="CLEAR", width=7, command=self.clear_vkitti2).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(train_box, textvariable=self.vkitti_info, wraplength=310).pack(anchor="w", pady=(0, 6))
+
+        self._path_row(train_box, "Images", self.data_var, clear_vkitti=True)
+        self._path_row(train_box, "Depth (optional)", self.depth_var, clear_vkitti=True)
         self._path_row(train_box, "Output", self.out_var)
         for label, var in [("Steps", self.steps_var), ("Image size", self.size_var), ("Splats", self.splats_var), ("Latent", self.latent_var), ("Batch", self.batch_var)]:
             row = ttk.Frame(train_box)
@@ -89,34 +103,84 @@ class WorldStudio:
             ttk.Label(explore, text=label).pack(anchor="w")
             ttk.Scale(explore, variable=var, from_=lo, to=hi, command=lambda _=None: self.render()).pack(fill=tk.X)
         ttk.Button(explore, text="RESET CAMERA", command=self.reset_camera).pack(fill=tk.X, pady=(6, 2))
-        ttk.Label(explore, text="Left: belief render   |   Right: learned depth\nSingle-image training is 2.5-D. True multi-view consistency is a later gate.", wraplength=310).pack(anchor="w", pady=(6, 0))
+        ttk.Label(
+            explore,
+            text="Left: belief render   |   Right: learned depth\nVKITTI2 depth is fixed-scale (cm -> metres -> /80 m), not per-image percentile-normalised. This branch is still single-frame 2.5-D; pose-aware multi-view is the next gate.",
+            wraplength=310,
+        ).pack(anchor="w", pady=(6, 0))
 
         self.canvas_label = ttk.Label(view, anchor="center")
         self.canvas_label.pack(fill=tk.BOTH, expand=True)
-        self.info = tk.StringVar(value="Load or train a model.")
+        self.info = tk.StringVar(value="Load Virtual KITTI 2, a normal folder, or a checkpoint.")
         ttk.Label(view, textvariable=self.info, anchor="center").pack(fill=tk.X)
 
-    def _path_row(self, parent, label, var):
+    def _path_row(self, parent, label, var, *, clear_vkitti=False):
         row = ttk.Frame(parent)
         row.pack(fill=tk.X, pady=2)
         ttk.Label(row, text=label, width=14).pack(side=tk.LEFT)
         ttk.Entry(row, textvariable=var, width=25).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         def browse():
             p = filedialog.askdirectory()
             if p:
+                if clear_vkitti:
+                    self.clear_vkitti2(silent=True)
                 var.set(p)
+
         ttk.Button(row, text="…", width=3, command=browse).pack(side=tk.LEFT, padx=(3, 0))
+
+    def load_vkitti2(self):
+        p = filedialog.askdirectory(
+            title="Choose common parent containing extracted Virtual KITTI 2 RGB and depth archives"
+        )
+        if not p:
+            return
+        self.status.set("scanning Virtual KITTI 2…")
+        self.root.update_idletasks()
+        try:
+            samples = discover_vkitti2(p, camera=0)
+        except Exception as e:
+            self.status.set("Virtual KITTI 2 load failed")
+            messagebox.showerror(
+                "Virtual KITTI 2",
+                f"{e}\n\nChoose the COMMON PARENT containing both extracted RGB and depth trees.",
+            )
+            return
+
+        self.vkitti_var.set(p)
+        self.data_var.set("")
+        self.depth_var.set("")
+        self.out_var.set(str(Path.cwd() / "runs" / "vkitti2"))
+        # Deliberate overnight preset for a 12 GB-class GPU. User can edit it.
+        self.steps_var.set(80000)
+        self.size_var.set(96)
+        self.splats_var.set(256)
+        self.latent_var.set(96)
+        self.batch_var.set(6)
+        variations = ", ".join(VKITTI2_DEFAULT_VARIATIONS)
+        self.vkitti_info.set(f"VKITTI2 ON: {len(samples)} paired frames | Camera_0 | {variations}")
+        self.status.set(f"Virtual KITTI 2 ready: {len(samples)} RGB+depth pairs; fixed depth scale 80 m")
+
+    def clear_vkitti2(self, *, silent=False):
+        self.vkitti_var.set("")
+        self.vkitti_info.set("Virtual KITTI 2 mode: OFF")
+        if not silent:
+            self.status.set(f"custom folder mode | device: {self.device}")
 
     def start_train(self):
         if self.train_thread and self.train_thread.is_alive():
             return
-        if not self.data_var.get():
-            messagebox.showerror("WorldSplat", "Choose an image folder first.")
+        vkitti = self.vkitti_var.get().strip()
+        if not vkitti and not self.data_var.get():
+            messagebox.showerror("WorldSplat", "Load Virtual KITTI 2 or choose an image folder first.")
             return
         self.stop_event.clear()
         cfg = TrainConfig(
             data_dir=self.data_var.get(),
             depth_dir=self.depth_var.get() or None,
+            vkitti2_root=vkitti or None,
+            vkitti2_depth_max_m=80.0,
+            vkitti2_camera=0,
             out_dir=self.out_var.get(),
             steps=int(self.steps_var.get()),
             image_size=int(self.size_var.get()),
@@ -124,11 +188,13 @@ class WorldStudio:
             latent_dim=int(self.latent_var.get()),
             batch=int(self.batch_var.get()),
         )
+
         def worker():
             try:
                 train_worldsplat(cfg, callback=self.messages.put, stop_event=self.stop_event)
             except Exception as e:
                 self.messages.put({"kind": "error", "error": repr(e)})
+
         self.train_thread = threading.Thread(target=worker, daemon=True)
         self.train_thread.start()
         self.status.set("training…")
@@ -147,7 +213,8 @@ class WorldStudio:
                 elif k == "step":
                     self.progress["value"] = 100.0 * m["step"] / max(m["steps"], 1)
                     d = f" depth={m['depth']:.4f}" if m.get("has_depth") else " depth=UNSUPERVISED"
-                    self.status.set(f"step {m['step']}/{m['steps']} loss={m['loss']:.4f} rgb={m['rgb']:.4f}{d}")
+                    kind = m.get("dataset_kind", "folder")
+                    self.status.set(f"{kind} | step {m['step']}/{m['steps']} loss={m['loss']:.4f} rgb={m['rgb']:.4f}{d}")
                 elif k == "preview":
                     self._show_image(Path(m["path"]))
                 elif k == "done":
@@ -185,7 +252,8 @@ class WorldStudio:
             self.new_random()
             ds = extra.get("dataset_size", "?")
             dep = extra.get("depth_supervised", False)
-            self.info.set(f"{path.name} | dataset={ds} | depth supervised={dep} | device={self.device}")
+            kind = extra.get("dataset_kind", "unknown")
+            self.info.set(f"{path.name} | dataset={ds} | kind={kind} | depth supervised={dep} | device={self.device}")
         except Exception as e:
             messagebox.showerror("WorldSplat", repr(e))
 
