@@ -28,6 +28,16 @@ class RenderOutput:
 
 
 def _anchor_grid(n: int) -> torch.Tensor:
+    """Return n approximately square, symmetric image-plane ray anchors.
+
+    The old implementation built ceil(sqrt(n))**2 points and then returned
+    pts[:n]. For non-square counts such as 512 that lopped points off one end
+    of the rasterised grid and introduced a small vertical asymmetry. We still
+    start from the same square lattice, but select n indices uniformly across
+    the full flattened lattice so both extrema and the centroid stay symmetric.
+    """
+    if n <= 0:
+        raise ValueError("n must be positive")
     side = int(n**0.5)
     if side * side < n:
         side += 1
@@ -35,7 +45,10 @@ def _anchor_grid(n: int) -> torch.Tensor:
     xs = torch.linspace(-0.85, 0.85, side)
     gy, gx = torch.meshgrid(ys, xs, indexing="ij")
     pts = torch.stack([gx.reshape(-1), gy.reshape(-1)], dim=-1)
-    return pts[:n]
+    if pts.shape[0] == n:
+        return pts
+    idx = torch.linspace(0, pts.shape[0] - 1, n).round().to(torch.long)
+    return pts[idx]
 
 
 class SoftSplatRenderer(nn.Module):
@@ -145,7 +158,7 @@ class Encoder(nn.Module):
 
 
 class SplatDecoder(nn.Module):
-    PARAMS = 8  # dx,dy,z,sigma,r,g,b,opacity
+    PARAMS = 8  # du,dv,z,sigma,r,g,b,opacity
 
     def __init__(self, cfg: WorldSplatConfig):
         super().__init__()
@@ -156,13 +169,33 @@ class SplatDecoder(nn.Module):
             nn.Linear(h, h), nn.SiLU(),
             nn.Linear(h, cfg.num_splats * self.PARAMS),
         )
+        # These are IMAGE-PLANE / RAY anchors, not world-space x/y anchors.
         self.register_buffer("xy_anchor", _anchor_grid(cfg.num_splats))
 
     def activate(self, raw: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         raw = raw.view(raw.shape[0], self.cfg.num_splats, self.PARAMS)
-        xy = self.xy_anchor[None] + 0.38 * torch.tanh(raw[..., 0:2])
+
+        # Phase-1 geometry fix:
+        #
+        # Old v0 treated a bounded image-style anchor as world x/y and then
+        # perspective-divided by z. Far splats were therefore forced toward the
+        # centre of the frame: u=f*x/z. RGB wanted a far building at the edge,
+        # while metric depth wanted large z, and the parameterisation made those
+        # constraints mutually incompatible.
+        #
+        # Keep the learned anchor/offset in ray coordinates (u,v), learn depth
+        # independently, then unproject the ray into camera-space x/y:
+        #
+        #     x = u*z/f, y = v*z/f
+        #
+        # so a zero-rotation render projects back to exactly the chosen (u,v)
+        # regardless of depth. This is a coordinate fix, not a stereo/world
+        # binding model yet.
+        uv = self.xy_anchor[None] + 0.38 * torch.tanh(raw[..., 0:2])
         z = self.cfg.z_near + (self.cfg.z_far - self.cfg.z_near) * torch.sigmoid(raw[..., 2:3])
+        xy = uv * z / float(self.cfg.focal)
         xyz = torch.cat([xy, z], dim=-1)
+
         sigma = 0.025 + 0.20 * torch.sigmoid(raw[..., 3])
         color = torch.sigmoid(raw[..., 4:7])
         opacity = torch.sigmoid(raw[..., 7])
@@ -205,7 +238,11 @@ class WorldSplatVAE(nn.Module):
 
     def checkpoint_dict(self, *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
-            "format": "worldsplat-v0",
+            # Geometry semantics changed from v0: loading an old checkpoint
+            # under this renderer would silently reinterpret its x/y outputs.
+            # Use a distinct format so the A/B control cannot be overwritten by
+            # accidental cross-loading.
+            "format": "worldsplat-v0-rayfix",
             "config": asdict(self.cfg),
             "state_dict": self.state_dict(),
             "extra": extra or {},
@@ -214,8 +251,11 @@ class WorldSplatVAE(nn.Module):
     @classmethod
     def load_checkpoint(cls, path: str | Path, *, device: str | torch.device = "cpu") -> tuple["WorldSplatVAE", dict[str, Any]]:
         obj = torch.load(path, map_location=device, weights_only=False)
-        if obj.get("format") != "worldsplat-v0":
-            raise ValueError("not a WorldSplat v0 checkpoint")
+        if obj.get("format") != "worldsplat-v0-rayfix":
+            raise ValueError(
+                "not a WorldSplat ray-fix checkpoint; old worldsplat-v0 checkpoints "
+                "use incompatible x/y geometry and are intentionally not auto-loaded"
+            )
         cfg = WorldSplatConfig(**obj["config"])
         model = cls(cfg).to(device)
         model.load_state_dict(obj["state_dict"], strict=True)
