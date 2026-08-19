@@ -18,7 +18,7 @@ from worldmodel.worldsplat import WorldSplatVAE, depth_to_unit
 class WorldStudio:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("WorldModel — WorldSplat Virtual KITTI 2")
+        root.title("WorldModel — WorldSplat VKITTI2 — RAY FIX")
         root.geometry("1180x820")
         self.messages: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
@@ -40,10 +40,13 @@ class WorldStudio:
         outer.add(controls, weight=0)
         outer.add(view, weight=1)
 
-        ttk.Label(controls, text="WorldSplat — VKITTI2", font=("TkDefaultFont", 16, "bold")).pack(anchor="w")
+        ttk.Label(controls, text="WorldSplat — VKITTI2 RAY FIX", font=("TkDefaultFont", 16, "bold")).pack(anchor="w")
         ttk.Label(
             controls,
-            text="Geometry-supervised 3-D-world experiment. Load extracted Virtual KITTI 2 RGB + depth with one button, then train / sample / orbit.",
+            text=(
+                "Phase-1 A/B: image-plane ray position is now independent of depth. "
+                "Same VKITTI2 RGB + metric-depth experiment; no stereo/world binding yet."
+            ),
             wraplength=330,
         ).pack(anchor="w", pady=(0, 8))
 
@@ -51,10 +54,11 @@ class WorldStudio:
         self.depth_var = tk.StringVar()
         self.vkitti_var = tk.StringVar()
         self.vkitti_info = tk.StringVar(value="Virtual KITTI 2 mode: OFF")
-        self.out_var = tk.StringVar(value=str(Path.cwd() / "runs" / "vkitti2"))
+        self.out_var = tk.StringVar(value=str(Path.cwd() / "runs" / "vkitti2_rayfix"))
+        # Strict A/B defaults copied from the completed 80k control run.
         self.steps_var = tk.IntVar(value=80000)
-        self.size_var = tk.IntVar(value=96)
-        self.splats_var = tk.IntVar(value=256)
+        self.size_var = tk.IntVar(value=128)
+        self.splats_var = tk.IntVar(value=512)
         self.latent_var = tk.IntVar(value=96)
         self.batch_var = tk.IntVar(value=6)
 
@@ -70,7 +74,13 @@ class WorldStudio:
         self._path_row(train_box, "Images", self.data_var, clear_vkitti=True)
         self._path_row(train_box, "Depth (optional)", self.depth_var, clear_vkitti=True)
         self._path_row(train_box, "Output", self.out_var)
-        for label, var in [("Steps", self.steps_var), ("Image size", self.size_var), ("Splats", self.splats_var), ("Latent", self.latent_var), ("Batch", self.batch_var)]:
+        for label, var in [
+            ("Steps", self.steps_var),
+            ("Image size", self.size_var),
+            ("Splats", self.splats_var),
+            ("Latent", self.latent_var),
+            ("Batch", self.batch_var),
+        ]:
             row = ttk.Frame(train_box)
             row.pack(fill=tk.X, pady=2)
             ttk.Label(row, text=label, width=14).pack(side=tk.LEFT)
@@ -81,7 +91,7 @@ class WorldStudio:
         ttk.Button(row, text="STOP", command=self.stop_train).pack(side=tk.LEFT, padx=(4, 0))
         self.progress = ttk.Progressbar(train_box, maximum=100)
         self.progress.pack(fill=tk.X, pady=(6, 2))
-        self.status = tk.StringVar(value=f"device: {self.device}")
+        self.status = tk.StringVar(value=f"ray-fix branch | device: {self.device}")
         ttk.Label(train_box, textvariable=self.status, wraplength=310).pack(anchor="w")
 
         explore = ttk.LabelFrame(controls, text="Explore", padding=8)
@@ -105,13 +115,18 @@ class WorldStudio:
         ttk.Button(explore, text="RESET CAMERA", command=self.reset_camera).pack(fill=tk.X, pady=(6, 2))
         ttk.Label(
             explore,
-            text="Left: belief render   |   Right: learned depth\nVKITTI2 depth is fixed-scale (cm -> metres -> /80 m), not per-image percentile-normalised. This branch is still single-frame 2.5-D; pose-aware multi-view is the next gate.",
+            text=(
+                "Left: belief render   |   Right: learned depth\n"
+                "Judge geometry first with preview_latest.png or ENCODE IMAGE. "
+                "NEW RANDOM WORLD is a separate prior-support test.\n"
+                "VKITTI2 depth is fixed-scale (cm -> metres -> /80 m)."
+            ),
             wraplength=310,
         ).pack(anchor="w", pady=(6, 0))
 
         self.canvas_label = ttk.Label(view, anchor="center")
         self.canvas_label.pack(fill=tk.BOTH, expand=True)
-        self.info = tk.StringVar(value="Load Virtual KITTI 2, a normal folder, or a checkpoint.")
+        self.info = tk.StringVar(value="Load Virtual KITTI 2, a normal folder, or a ray-fix checkpoint.")
         ttk.Label(view, textvariable=self.info, anchor="center").pack(fill=tk.X)
 
     def _path_row(self, parent, label, var, *, clear_vkitti=False):
@@ -150,22 +165,24 @@ class WorldStudio:
         self.vkitti_var.set(p)
         self.data_var.set("")
         self.depth_var.set("")
-        self.out_var.set(str(Path.cwd() / "runs" / "vkitti2"))
-        # Deliberate overnight preset for a 12 GB-class GPU. User can edit it.
+        self.out_var.set(str(Path.cwd() / "runs" / "vkitti2_rayfix"))
+        # Strict A/B against the completed control run.
         self.steps_var.set(80000)
-        self.size_var.set(96)
-        self.splats_var.set(256)
+        self.size_var.set(128)
+        self.splats_var.set(512)
         self.latent_var.set(96)
         self.batch_var.set(6)
         variations = ", ".join(VKITTI2_DEFAULT_VARIATIONS)
         self.vkitti_info.set(f"VKITTI2 ON: {len(samples)} paired frames | Camera_0 | {variations}")
-        self.status.set(f"Virtual KITTI 2 ready: {len(samples)} RGB+depth pairs; fixed depth scale 80 m")
+        self.status.set(
+            f"RAY FIX ready: {len(samples)} RGB+depth pairs; fixed depth scale 80 m; output kept separate"
+        )
 
     def clear_vkitti2(self, *, silent=False):
         self.vkitti_var.set("")
         self.vkitti_info.set("Virtual KITTI 2 mode: OFF")
         if not silent:
-            self.status.set(f"custom folder mode | device: {self.device}")
+            self.status.set(f"custom folder mode | ray fix | device: {self.device}")
 
     def start_train(self):
         if self.train_thread and self.train_thread.is_alive():
@@ -197,7 +214,7 @@ class WorldStudio:
 
         self.train_thread = threading.Thread(target=worker, daemon=True)
         self.train_thread.start()
-        self.status.set("training…")
+        self.status.set("training ray-fix A/B…")
 
     def stop_train(self):
         self.stop_event.set()
@@ -214,7 +231,7 @@ class WorldStudio:
                     self.progress["value"] = 100.0 * m["step"] / max(m["steps"], 1)
                     d = f" depth={m['depth']:.4f}" if m.get("has_depth") else " depth=UNSUPERVISED"
                     kind = m.get("dataset_kind", "folder")
-                    self.status.set(f"{kind} | step {m['step']}/{m['steps']} loss={m['loss']:.4f} rgb={m['rgb']:.4f}{d}")
+                    self.status.set(f"RAY FIX | {kind} | step {m['step']}/{m['steps']} loss={m['loss']:.4f} rgb={m['rgb']:.4f}{d}")
                 elif k == "preview":
                     self._show_image(Path(m["path"]))
                 elif k == "done":
@@ -253,7 +270,9 @@ class WorldStudio:
             ds = extra.get("dataset_size", "?")
             dep = extra.get("depth_supervised", False)
             kind = extra.get("dataset_kind", "unknown")
-            self.info.set(f"{path.name} | dataset={ds} | kind={kind} | depth supervised={dep} | device={self.device}")
+            self.info.set(
+                f"RAY FIX | {path.name} | dataset={ds} | kind={kind} | depth supervised={dep} | device={self.device}"
+            )
         except Exception as e:
             messagebox.showerror("WorldSplat", repr(e))
 
@@ -297,13 +316,20 @@ class WorldStudio:
         a = float(self.morph.get())
         z = (1 - a) * self.z0 + a * self.z1
         with torch.no_grad():
-            out = self.model.render_latent(z, yaw_deg=float(self.yaw.get()), pitch_deg=float(self.pitch.get()), focal=float(self.focal.get()))
+            out = self.model.render_latent(
+                z,
+                yaw_deg=float(self.yaw.get()),
+                pitch_deg=float(self.pitch.get()),
+                focal=float(self.focal.get()),
+            )
             rgb = (out.rgb[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
             d = depth_to_unit(out.depth, self.model.cfg)[0].cpu().numpy()
         dg = ((1.0 - d) * 255).astype(np.uint8)
         depth_rgb = np.stack([dg, dg, dg], axis=-1)
         combo = np.concatenate([rgb, depth_rgb], axis=1)
-        self._set_canvas(Image.fromarray(combo).resize((combo.shape[1] * 4, combo.shape[0] * 4), Image.Resampling.NEAREST))
+        self._set_canvas(
+            Image.fromarray(combo).resize((combo.shape[1] * 4, combo.shape[0] * 4), Image.Resampling.NEAREST)
+        )
 
 
 def main():

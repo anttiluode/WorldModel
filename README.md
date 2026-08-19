@@ -4,13 +4,62 @@
 
 This repo is a research instrument for a small **anchored generative world model**: a persistent scene representation that separates its current best hypothesis from the evidence that actually supports that hypothesis.
 
-## This branch: WorldSplat + Virtual KITTI 2
+## This branch: Phase 1 ray-coordinate fix
 
-`agent/worldsplat-vkitti2` is a clone of the video/demo branch `agent/worldsplat-studio`. The original Studio branch is intentionally left unchanged.
+`agent/worldsplat-vkitti2-rayfix` is a strict A/B child of `agent/worldsplat-vkitti2`. The completed 80k VKITTI2 branch is intentionally left intact as the control.
 
-This branch exists for one specific next experiment:
+### Paper / technical note
 
-> **Take the tiny rotatable WorldSplat manifold that learned a geometrically wrong hollow-face solution from RGB-only CelebA, and train the same family on an outdoor world dataset with real dense geometry supervision.**
+**[WorldSplat is not 3D Gaussian Splatting — From single-scene reconstruction to a learned scene manifold](docs/WORLDSPLAT_VS_3DGS.md)** explains the central distinction from ordinary scene-specific 3DGS, the SplatWorld / TinyAvatar / SlapStack lineage that led here, why CelebA was deceptively friendly, what the failed VKITTI2 run exposed, and why paired stereo views are the next important world-model test.
+
+The first VKITTI2 run learned visible road/tree/sky structure but retained a starved, blurry peripheral field. The code audit found a concrete coordinate conflict: the decoder inherited bounded image-like x/y anchors from the SplatWorld/TinyAvatar lineage, then treated them as world-space x/y and perspective-divided them by learned depth.
+
+Old parameterisation:
+
+```text
+x,y = bounded anchor + offset
+z   = learned depth
+u   = focal*x/z
+v   = focal*y/z
+```
+
+As z increased, a splat lost access to the image periphery. Metric depth therefore forced far buildings/sky inward while RGB reconstruction asked them to remain at the frame edge.
+
+**Phase 1 changes only the coordinate semantics and the anchor-grid asymmetry:**
+
+```text
+u,v = bounded image-plane ray anchor + offset
+z   = learned depth
+x,y = (u,v) * z / focal
+```
+
+At zero camera rotation, projection now gives `focal*x/z == u` and `focal*y/z == v` exactly, so image position and depth are independent. This is a geometry correction, **not** stereo, SLAM, persistence, object binding, or a world-layer claim.
+
+The old `_anchor_grid(512)` also made a 23x23 lattice and returned the first 512 entries, truncating one end of the grid. This branch selects 512 points evenly over the complete lattice so its centroid and full x/y extent remain symmetric.
+
+Old `worldsplat-v0` checkpoints are deliberately rejected on this branch because their x/y outputs have different semantics. New checkpoints use format `worldsplat-v0-rayfix`.
+
+### Strict retrain A/B
+
+For the cleanest comparison with the completed run, use the same settings that produced it:
+
+```text
+steps       80000
+image size  128
+splats      512
+latent      96
+batch       6
+camera      Camera_0
+depth max   80 m
+```
+
+The GUI defaults to those values on this branch and writes to `runs/vkitti2_rayfix` so it does not overwrite the old `runs/vkitti2` control.
+
+Judge the model first by `preview_latest.png` or **ENCODE IMAGE** on a real VKITTI frame. `NEW RANDOM WORLD` samples `z ~ N(0,I)` and remains a separate test of whether the weak-KL VAE prior matches the aggregate encoder posterior.
+
+The Phase-1 falsifier is narrow: **does decoupling ray position from depth reduce the peripheral splat fog while preserving useful metric-depth organization?** If not, do not rescue the result by silently adding more capacity.
+
+## Virtual KITTI 2 loader
 
 Virtual KITTI 2 is convenient because its driving scenes provide paired RGB and 16-bit metric depth, repeated scenes under weather/time changes, stereo cameras, and camera ground truth. This v0 loader deliberately uses **Camera_0** and only the non-rotated appearance/weather variants:
 
@@ -23,7 +72,7 @@ fog
 sunset
 ```
 
-The ±15°/±30° camera-rotation variants are excluded for now because WorldSplat v0 still treats every training frame as if it came from one canonical camera. Pose-aware multi-view training is the next architecture gate.
+The ±15°/±30° camera-rotation variants are excluded for now because WorldSplat still treats every training frame as a separate latent scene. Pose-aware multi-view training is the next architecture gate.
 
 ### Easiest run: GUI
 
@@ -42,28 +91,16 @@ D:/VKITTI2/
 
 ```bash
 git fetch origin
-git switch agent/worldsplat-vkitti2
+git switch --track origin/agent/worldsplat-vkitti2-rayfix
 pip install -r requirements-worldsplat.txt
 python world_studio.py
 ```
 
 4. Click **LOAD VIRTUAL KITTI 2** and choose `D:/VKITTI2` — the common parent containing both extracted trees.
 
-The button scans and pairs RGB/depth by `(scene, variation, frame, camera)`, switches the run into Virtual KITTI 2 mode, and loads the current 12-GB-GPU overnight preset:
-
-```text
-steps       80000
-image size  96
-splats      256
-latent      96
-batch       6
-camera      Camera_0
-depth max   80 m
-```
-
 Then press **START TRAIN**.
 
-### Depth handling is intentionally different here
+### Depth handling is intentionally fixed-scale
 
 Virtual KITTI 2 depth PNG values are centimetres. This loader converts them as:
 
@@ -73,57 +110,34 @@ PNG integer
     -> unit depth = clip(depth_metres / 80 m, 0, 1)
 ```
 
-There is **no per-image percentile normalisation** in the Virtual KITTI loader. Ten metres therefore means the same training depth in every frame. This matters for the world-model experiment; the older generic relative-depth loader intentionally remains unchanged for the original Studio branch/workflow.
-
-The cache is created locally under the chosen output directory (`runs/vkitti2/cache` by default). It is training data/cache, not something intended for GitHub.
+There is **no per-image percentile normalisation** in the Virtual KITTI loader. Ten metres therefore means the same training depth in every frame.
 
 ### Command-line equivalent
 
 ```bash
 python train_worldsplat.py \
   --vkitti2 "D:/VKITTI2" \
-  --out runs/vkitti2 \
-  --image-size 96 \
-  --splats 256 \
+  --out runs/vkitti2_rayfix \
+  --image-size 128 \
+  --splats 512 \
   --latent 96 \
   --batch 6 \
   --steps 80000
 ```
 
-`--vkitti2-depth-max-m` defaults to `80.0` if you want to change the global depth range.
+`--vkitti2-depth-max-m` defaults to `80.0`.
 
 ### What this experiment can and cannot establish
 
-This branch is still **single-frame WorldSplat v0**. Each image is encoded into its own latent scene, so correct metric depth supervision can test whether the learned splat manifold stops choosing hollow/cardboard geometry, but it is not yet one persistent world reconstructed from many camera poses.
+This branch is still **single-frame WorldSplat**. Each image is encoded into its own latent scene. Correct metric-depth supervision can test the splat geometry, but it is not yet one persistent world reconstructed from many camera poses.
 
-If this run is encouraging, the next branch should use Virtual KITTI 2's camera extrinsics/intrinsics and train **one shared world state against several frames/poses**. That is the important transition from a geometry-supervised 2.5-D scene prior to an actual multi-view 3-D world model.
+The dataset's two cameras are deliberately *not* consumed jointly yet. A later stereo branch should pair Camera_0 and Camera_1 at the same frame and force **one decoded scene** to render both views. That can provide multiview geometric pressure even without using the supplied depth maps, but merely mixing both camera folders as unrelated training images would not do that.
 
-Official dataset/download/format page: https://europe.naverlabs.com/proxy-virtual-worlds-vkitti-2/
+## WorldSplat Studio lineage
 
-Virtual KITTI 2 is for non-commercial use under its published dataset terms; check the official page before redistribution or commercial use.
+The original practical world-prior trainer/viewer lives on `agent/worldsplat-studio`. The first VKITTI2 adaptation lives on `agent/worldsplat-vkitti2`; this branch changes only the Phase-1 geometry described above.
 
-## WorldSplat Studio — usable now
-
-The original practical world-prior trainer/viewer lives on `agent/worldsplat-studio`.
-
-```bash
-pip install -r requirements-worldsplat.txt
-python world_studio.py
-```
-
-Give it a folder of images, optionally a matching folder of relative depth maps, and train a compact latent model whose decoder emits explicit 3-D soft splats rather than pixels. The GUI can sample, encode images, interpolate worlds, and orbit the learned scene.
-
-For the original v0 geometry-supervised mode using monocular teacher depth:
-
-```bash
-pip install transformers accelerate
-python tools/make_depths.py --data D:/world_images --out D:/world_depth
-python world_studio.py
-```
-
-See `WORLDSPLAT_QUICKSTART.md` and `docs/WORLDSPLAT_V0.md`.
-
-Important: RGB-only training is an **appearance/cardboard baseline**. Monocular depth makes this a visible-surface **2.5-D** learner, not a solved full 3-D world model. True multiview consistency is the next representation gate.
+Important: RGB-only training is an **appearance/cardboard baseline**. Single-frame metric depth makes this a geometry-supervised visible-surface learner, not a solved full 3-D world model. True multiview consistency is the next representation gate.
 
 ## The anchored-world question
 
