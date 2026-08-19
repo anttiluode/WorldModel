@@ -8,6 +8,10 @@ This repo is a research instrument for a small **anchored generative world model
 
 `agent/worldsplat-vkitti2-rayfix` is a strict A/B child of `agent/worldsplat-vkitti2`. The completed 80k VKITTI2 branch is intentionally left intact as the control.
 
+### Paper / technical note
+
+**[WorldSplat is not 3D Gaussian Splatting — From single-scene reconstruction to a learned scene manifold](docs/WORLDSPLAT_VS_3DGS.md)** explains the central distinction from ordinary scene-specific 3DGS, the SplatWorld / TinyAvatar / SlapStack lineage that led here, why CelebA was deceptively friendly, what the failed VKITTI2 run exposed, and why paired stereo views are the next important world-model test.
+
 The first VKITTI2 run learned visible road/tree/sky structure but retained a starved, blurry peripheral field. The code audit found a concrete coordinate conflict: the decoder inherited bounded image-like x/y anchors from the SplatWorld/TinyAvatar lineage, then treated them as world-space x/y and perspective-divided them by learned depth.
 
 Old parameterisation:
